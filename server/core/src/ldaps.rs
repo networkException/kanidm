@@ -1,6 +1,6 @@
 use crate::actors::QueryServerReadV1;
 use crate::config::TcpAddressInfo;
-use crate::tcp::process_client_addr;
+use crate::tcp::{ConnectionAddress, process_client_addr};
 use crate::CoreAction;
 use futures_util::sink::SinkExt;
 use futures_util::stream::StreamExt;
@@ -156,7 +156,7 @@ async fn client_tls_accept(
 ) {
     let Ok((stream, client_addr)) = process_client_addr(
         stream,
-        connection_addr,
+        ConnectionAddress::Tcp(connection_addr),
         LDAP_CLIENT_CONN_TIMEOUT,
         trusted_tcp_info_ips,
     )

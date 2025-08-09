@@ -2,7 +2,7 @@ use self::extractors::ClientConnInfo;
 use self::javascript::*;
 use crate::actors::{QueryServerReadV1, QueryServerWriteV1};
 use crate::config::{AddressSet, Configuration, TcpAddressInfo};
-use crate::tcp::process_client_addr;
+use crate::tcp::{ConnectionAddress, process_client_addr};
 use crate::CoreAction;
 use axum::{
     body::Body,
@@ -28,13 +28,13 @@ use serde::de::DeserializeOwned;
 use sketching::*;
 use std::fmt::Write;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{net::SocketAddr, str::FromStr};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite},
-    net::{TcpListener, TcpStream},
+    net::{TcpListener, TcpStream, UnixListener, UnixStream},
     sync::broadcast,
     task,
     time::timeout,
@@ -395,60 +395,69 @@ pub async fn create_https_server(
         // the connect_info bit here lets us pick up the remote address of the client
         .into_make_service_with_connect_info::<ClientConnInfo>();
 
-    let addrs: Vec<SocketAddr> = config
-        .address
-        .iter()
-        .map(|addr_str| {
-            SocketAddr::from_str(addr_str).map_err(|err| {
+    let mut listener_handles = Vec::with_capacity(config.address.len());
+    for addr in config.address {
+        if addr.starts_with("/") {
+            let path = Path::new(&addr);
+
+            let listener = match UnixListener::bind(&path) {
+                Ok(l) => l,
+                Err(err) => {
+                    error!(?err, "Failed to bind unix listener");
+                    return Err(());
+                }
+            };
+
+            let app = app.clone();
+            let rx = server_message_tx.subscribe();
+
+            listener_handles.push(task::spawn(server_unix_loop(listener, app, rx)));
+        } else {
+            let addr = SocketAddr::from_str(&addr).map_err(|err| {
                 error!(
                     "Failed to parse address ({:?}) from config: {:?}",
-                    addr_str, err
+                    addr, err
                 );
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            })?;
 
-    info!("Starting the web server...");
+            let listener = match TcpListener::bind(addr).await {
+                Ok(l) => l,
+                Err(err) => {
+                    error!(?err, "Failed to bind tcp listener");
+                    return Err(());
+                }
+            };
 
-    let mut listener_handles = Vec::with_capacity(addrs.len());
-    for addr in addrs {
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => l,
-            Err(err) => {
-                error!(?err, "Failed to bind tcp listener");
-                return Err(());
-            }
-        };
+            let app = app.clone();
+            let rx = server_message_tx.subscribe();
+            let trusted_tcp_info_ips = trusted_tcp_info_ips.clone();
 
-        let app = app.clone();
-        let rx = server_message_tx.subscribe();
-        let trusted_tcp_info_ips = trusted_tcp_info_ips.clone();
+            let handle = match &maybe_tls_acceptor {
+                Some(tls_acceptor) => {
+                    let tls_acceptor = tls_acceptor.clone();
+                    let server_message_tx = server_message_tx.clone();
+                    let tls_acceptor_reload_rx = tls_acceptor_reload_tx.subscribe();
 
-        let handle = match &maybe_tls_acceptor {
-            Some(tls_acceptor) => {
-                let tls_acceptor = tls_acceptor.clone();
-                let server_message_tx = server_message_tx.clone();
-                let tls_acceptor_reload_rx = tls_acceptor_reload_tx.subscribe();
-
-                task::spawn(server_tls_loop(
-                    tls_acceptor,
+                    task::spawn(server_tls_loop(
+                        tls_acceptor,
+                        listener,
+                        app,
+                        rx,
+                        server_message_tx,
+                        tls_acceptor_reload_rx,
+                        trusted_tcp_info_ips,
+                    ))
+                }
+                None => task::spawn(server_plaintext_loop_tcp(
                     listener,
                     app,
                     rx,
-                    server_message_tx,
-                    tls_acceptor_reload_rx,
                     trusted_tcp_info_ips,
-                ))
-            }
-            None => task::spawn(server_plaintext_loop(
-                listener,
-                app,
-                rx,
-                trusted_tcp_info_ips,
-            )),
-        };
+                )),
+            };
 
-        listener_handles.push(handle);
+            listener_handles.push(handle);
+        }
     }
 
     Ok(listener_handles)
@@ -499,7 +508,40 @@ async fn server_tls_loop(
     info!("Stopped {}", super::TaskName::HttpsServer);
 }
 
-async fn server_plaintext_loop(
+async fn server_unix_loop(
+    listener: UnixListener,
+    app: IntoMakeServiceWithConnectInfo<Router, ClientConnInfo>,
+    mut rx: broadcast::Receiver<CoreAction>,
+) {
+    pin_mut!(listener);
+
+    loop {
+        tokio::select! {
+            Ok(action) = rx.recv() => {
+                match action {
+                    CoreAction::Shutdown => break,
+                    CoreAction::Reload => {},
+                }
+            }
+            accept = listener.accept() => {
+                match accept {
+                    Ok((stream, _)) => {
+                        let app = app.clone();
+                        task::spawn(handle_unix_conn(stream, app));
+                    }
+                    Err(err) => {
+                        error!("Web server exited with {:?}", err);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    info!("Stopped {}", super::TaskName::HttpsServer);
+}
+
+async fn server_plaintext_loop_tcp(
     listener: TcpListener,
     app: IntoMakeServiceWithConnectInfo<Router, ClientConnInfo>,
     mut rx: broadcast::Receiver<CoreAction>,
@@ -519,7 +561,7 @@ async fn server_plaintext_loop(
                 match accept {
                     Ok((stream, addr)) => {
                         let app = app.clone();
-                        task::spawn(handle_conn(stream, app, addr, trusted_tcp_info_ips.clone()));
+                        task::spawn(handle_tcp_conn(stream, app, addr, trusted_tcp_info_ips.clone()));
                     }
                     Err(err) => {
                         error!("Web server exited with {:?}", err);
@@ -534,7 +576,7 @@ async fn server_plaintext_loop(
 }
 
 /// This handles an individual connection.
-pub(crate) async fn handle_conn(
+pub(crate) async fn handle_tcp_conn(
     stream: TcpStream,
     app: IntoMakeServiceWithConnectInfo<Router, ClientConnInfo>,
     connection_addr: SocketAddr,
@@ -542,7 +584,7 @@ pub(crate) async fn handle_conn(
 ) -> Result<(), std::io::Error> {
     let (stream, client_addr) = process_client_addr(
         stream,
-        connection_addr,
+        ConnectionAddress::Tcp(connection_addr),
         HTTPS_CLIENT_CONN_TIMEOUT,
         trusted_tcp_info_ips,
     )
@@ -551,7 +593,34 @@ pub(crate) async fn handle_conn(
     let client_ip_addr = client_addr.ip();
 
     let client_conn_info = ClientConnInfo {
-        connection_addr,
+        connection_addr: ConnectionAddress::Tcp(connection_addr),
+        client_ip_addr,
+        client_cert: None,
+    };
+
+    // Hyper has its own `AsyncRead` and `AsyncWrite` traits and doesn't use tokio.
+    // `TokioIo` converts between them.
+    let stream = TokioIo::new(stream);
+
+    process_client_hyper(stream, app, client_conn_info).await
+}
+
+/// This handles an individual connection.
+pub(crate) async fn handle_unix_conn(
+    stream: UnixStream,
+    app: IntoMakeServiceWithConnectInfo<Router, ClientConnInfo>,
+) -> Result<(), std::io::Error> {
+    let (stream, client_addr) = process_client_addr(
+        stream,
+        ConnectionAddress::Unix,
+        HTTPS_CLIENT_CONN_TIMEOUT,
+        Arc::new(TcpAddressInfo::None),
+    ).await?;
+
+    let client_ip_addr = client_addr.ip();
+
+    let client_conn_info = ClientConnInfo {
+        connection_addr: ConnectionAddress::Unix,
         client_ip_addr,
         client_cert: None,
     };
@@ -573,7 +642,7 @@ pub(crate) async fn handle_tls_conn(
 ) -> Result<(), std::io::Error> {
     let (stream, client_addr) = process_client_addr(
         stream,
-        connection_addr,
+        ConnectionAddress::Tcp(connection_addr),
         HTTPS_CLIENT_CONN_TIMEOUT,
         trusted_tcp_info_ips,
     )
@@ -641,7 +710,7 @@ pub(crate) async fn handle_tls_conn(
     };
 
     let client_conn_info = ClientConnInfo {
-        connection_addr,
+        connection_addr: ConnectionAddress::Tcp(connection_addr),
         client_ip_addr,
         client_cert,
     };

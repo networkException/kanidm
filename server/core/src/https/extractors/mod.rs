@@ -1,4 +1,5 @@
 use crate::https::ServerState;
+use crate::tcp::ConnectionAddress;
 use axum::{
     extract::{connect_info::Connected, FromRequestParts},
     http::{header::AUTHORIZATION as AUTHORISATION, request::Parts, StatusCode},
@@ -172,7 +173,7 @@ pub struct ClientConnInfo {
     /// This is the address that is *connected* to Kanidm right now
     /// for this operation.
     #[allow(dead_code)]
-    pub connection_addr: SocketAddr,
+    pub connection_addr: ConnectionAddress,
     /// This is the client address as reported by a remote IP source
     /// such as x-forward-for or the PROXY protocol header
     pub client_ip_addr: IpAddr,
@@ -191,8 +192,8 @@ impl Connected<ClientConnInfo> for ClientConnInfo {
 impl Connected<SocketAddr> for ClientConnInfo {
     fn connect_info(connection_addr: SocketAddr) -> Self {
         ClientConnInfo {
+            connection_addr: ConnectionAddress::Tcp(connection_addr),
             client_ip_addr: connection_addr.ip().to_canonical(),
-            connection_addr,
             client_cert: None,
         }
     }

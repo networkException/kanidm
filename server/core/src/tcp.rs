@@ -1,17 +1,42 @@
 use crate::config::TcpAddressInfo;
 use haproxy_protocol::{ProxyHdrV1, ProxyHdrV2, RemoteAddress};
 use std::io::ErrorKind;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::{net::TcpStream, time::timeout};
+use std::fmt;
+use tokio::time::timeout;
 
-pub(crate) async fn process_client_addr(
-    stream: TcpStream,
-    connection_addr: SocketAddr,
+#[derive(Debug, Clone)]
+pub(crate) enum ConnectionAddress {
+    Unix,
+    Tcp(SocketAddr)
+}
+
+impl fmt::Display for ConnectionAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ConnectionAddress::Unix => write!(f, "unix://"),
+            ConnectionAddress::Tcp(socket_address) => write!(f, "tcp://{socket_address}"),
+        }
+    }
+}
+
+pub(crate) async fn process_client_addr<S>(
+    stream: S,
+    connection_addr: ConnectionAddress,
     time_limit: Duration,
     trusted_tcp_info_ips: Arc<TcpAddressInfo>,
-) -> Result<(TcpStream, SocketAddr), std::io::Error> {
+) -> Result<(S, SocketAddr), std::io::Error>
+where
+    S: tokio::io::AsyncReadExt + std::marker::Unpin,
+{
+    let ConnectionAddress::Tcp(connection_addr) = connection_addr else {
+        // NOTE: To simply codepaths, we simply use IPv6 Localhost as the client ip
+        //       for unix connections here.
+        return Ok((stream, SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0)));
+    };
+
     let canonical_conn_addr = connection_addr.ip().to_canonical();
 
     let hdr_result = match trusted_tcp_info_ips.as_ref() {

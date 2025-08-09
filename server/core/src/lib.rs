@@ -1000,7 +1000,7 @@ pub async fn create_server_core(
     if config.integration_test_config.is_some() {
         warn!("RUNNING IN INTEGRATION TEST MODE.");
         warn!("IF YOU SEE THIS IN PRODUCTION YOU MUST CONTACT SUPPORT IMMEDIATELY.");
-    } else if config.tls_config.is_none() {
+    } else if config.tls_config.is_none() && !config.address.iter().all(|address| address.starts_with("/")) {
         // TLS is great! We won't run without it.
         error!("Running without TLS is not supported! Quitting!");
         return Err(());
