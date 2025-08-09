@@ -395,12 +395,25 @@ pub async fn create_https_server(
         // the connect_info bit here lets us pick up the remote address of the client
         .into_make_service_with_connect_info::<ClientConnInfo>();
 
+    let mut provided_listeners = match provided_listeners::ProvidedListeners::from_env() {
+        Ok(l) => l,
+        Err(err) => {
+            error!(?err, "Failed to get provided listeners");
+            return Err(());
+        }
+    };
+
     let mut listener_handles = Vec::with_capacity(config.address.len());
     for addr in config.address {
         if addr.starts_with("/") {
             let path = Path::new(&addr);
 
-            let listener = match UnixListener::bind(&path) {
+            let listener = match provided_listeners.unix_tokio(path) {
+                Some(listener) => listener,
+                None => UnixListener::bind(path)
+            };
+
+            let listener = match listener {
                 Ok(l) => l,
                 Err(err) => {
                     error!(?err, "Failed to bind unix listener");
@@ -420,7 +433,7 @@ pub async fn create_https_server(
                 );
             })?;
 
-            let listener = match TcpListener::bind(addr).await {
+            let listener = match provided_listeners.tcp_tokio_resolved_or_bind(&addr).await {
                 Ok(l) => l,
                 Err(err) => {
                     error!(?err, "Failed to bind tcp listener");
