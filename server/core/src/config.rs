@@ -1023,8 +1023,13 @@ impl ConfigurationBuilder {
                 client_ca,
             }),
             _ => {
-                eprintln!("ERROR: Tls Private Key and Certificate Chain are required.");
-                return None;
+                match bindaddress {
+                    Some(ref bindaddress) if bindaddress.iter().all(|address| address.starts_with("/")) => None,
+                    _ => {
+                        eprintln!("ERROR: Tls Private Key and Certificate Chain are required.");
+                        return None;
+                    }
+                }
             }
         };
 
