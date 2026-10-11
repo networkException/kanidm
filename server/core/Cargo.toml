@@ -93,6 +93,7 @@ webauthn-rs = { workspace = true, features = [
     "preview-features",
     "danger-credential-internals",
 ] }
+provided-listeners = { version = "0.3.1", features = ["tokio"] }
 
 [dev-dependencies]
 walkdir = { workspace = true }

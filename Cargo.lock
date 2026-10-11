@@ -369,7 +369,7 @@ dependencies = [
  "libc",
  "libudev",
  "log",
- "memoffset",
+ "memoffset 0.8.0",
  "p256",
  "rand 0.8.7",
  "rand_core 0.6.4",
@@ -3847,6 +3847,7 @@ dependencies = [
  "ldap3_proto",
  "libc",
  "opentelemetry",
+ "provided-listeners",
  "qrcode",
  "regex",
  "reqwest",
@@ -4349,6 +4350,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "micromap"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4441,6 +4451,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset 0.9.1",
 ]
 
 [[package]]
@@ -5347,6 +5358,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f94967dc7688f3054c7fac87473ffae4cc4c3904800e2d9f5b857246d8963b0a"
 dependencies = [
  "prost",
+]
+
+[[package]]
+name = "provided-listeners"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e55c3f507f4d21d4fbd015ec546259feb993b775f6d81fbeb290ee6d3df29d09"
+dependencies = [
+ "nix",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]
